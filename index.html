@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trim to Target Size — Client-side FFmpeg</title>
+  <meta name="description" content="Split a video into two parts by target file size, fully in the browser using ffmpeg.wasm." />
+  <style>
+    :root {
+      --bg: #0b1320;
+      --panel: #0f172a;
+      --text: #e5e7eb;
+      --muted: #93c5fd;
+      --accent: #2563eb;
+      --accent-2: #1d4ed8;
+      --border: #334155;
+      --error-bg: #3b0b0b;
+      --error-bd: #7f1d1d;
+      --error-tx: #fecaca;
+      --ok-bg: #0b3b0f;
+      --ok-bd: #14532d;
+      --ok-tx: #bbf7d0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 32px 16px; background: var(--bg); color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    .wrap { max-width: 880px; margin: 0 auto; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.35);
+      padding: 20px; margin-bottom: 16px;
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    p.lead { margin: 0 0 20px; color: var(--muted); }
+    label { font-weight: 600; display: block; margin: 14px 0 6px; }
+    input[type="file"], input[type="number"], select {
+      width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--border);
+      background: #111827; color: var(--text);
+    }
+    .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .row-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .btn {
+      appearance: none; border: 0; background: var(--accent); color: #fff; font-weight: 800;
+      padding: 12px 16px; border-radius: 12px; cursor: pointer; transition: background .15s ease;
+      display: inline-flex; align-items: center; gap: 8px;
+    }
+    .btn:hover { background: var(--accent-2); }
+    .btn:disabled { opacity: .6; cursor: not-allowed; }
+    .muted { color: var(--muted); font-size: 13px; }
+    progress { width: 100%; height: 14px; }
+    .log { white-space: pre-wrap; font-size: 12px; color: var(--muted); max-height: 200px; overflow: auto; }
+    .error { background: var(--error-bg); color: var(--error-tx); border: 1px solid var(--error-bd); padding: 10px 12px; border-radius: 12px; }
+    .ok { background: var(--ok-bg); color: var(--ok-tx); border: 1px solid var(--ok-bd); padding: 10px 12px; border-radius: 12px; }
+    .links a {
+      display: inline-block; background: #111827; border: 1px solid var(--border);
+      border-radius: 12px; padding: 10px 14px; color: var(--text); text-decoration: none; margin-right: 10px; margin-top: 10px;
+    }
+    .drop {
+      border: 2px dashed var(--border); border-radius: 12px; padding: 14px; text-align: center;
+      background: #0b1220; color: var(--muted);
+    }
+    .drop.dragover { border-color: var(--accent); color: var(--text); }
+    footer { opacity: .7; font-size: 12px; text-align: center; margin-top: 16px; }
+    @media (max-width: 640px) { .row, .row-3 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Trim a Video to a Target File Size</h1>
+      <p class="lead">All processing happens in your browser using <code>ffmpeg.wasm</code>. No uploads.</p>
+
+      <div id="drop" class="drop">Click to choose a video or drag & drop here</div>
+      <input id="file" type="file" accept="video/*" style="display:none" />
+
+      <div class="row-3">
+        <div>
+          <label for="size">Target size</label>
+          <input id="size" name="size" type="number" step="any" min="0.1" placeholder="8" />
+          <div class="muted">Enter a number</div>
+        </div>
+        <div>
+          <label for="unit">Unit</label>
+          <select id="unit" name="unit">
+            <option value="MB" selected>MB</option>
+            <option value="GB">GB</option>
+          </select>
+          <div class="muted">MB is most common</div>
+        </div>
+        <div>
+          <label for="quality">Quality / Speed</label>
+          <select id="quality" name="quality">
+            <option value="fast">Fast (lower quality)</option>
+            <option value="balanced" selected>Balanced (default)</option>
+            <option value="high">High quality (slower)</option>
+          </select>
+          <div class="muted">Affects encoding time and size</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 14px;">
+        <button id="go" class="btn">
+          <span>Process</span>
+        </button>
+        <span id="pickName" class="muted" style="margin-left:12px;"></span>
+      </div>
+
+      <div id="status" style="margin-top:14px;"></div>
+      <progress id="prog" value="0" max="1" style="display:none"></progress>
+      <div id="err" style="display:none; margin-top: 12px;" class="error"></div>
+      <div id="ok" style="display:none; margin-top: 12px;" class="ok"></div>
+      <div id="log" class="log" style="margin-top: 12px;"></div>
+      <div id="links" class="links" style="margin-top: 12px;"></div>
+    </div>
+
+    <footer>Tip: Big files can be slow in the browser. Try Balanced or Fast quality for quicker results.</footer>
+  </div>
+
+<script type="module">
+import { createFFmpeg, fetchFile } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js";
+
+const ffmpeg = createFFmpeg({
+  log: true,
+  corePath: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/ffmpeg-core.js"
+});
+
+const $ = s => document.querySelector(s);
+const status = (msg) => $("#status").innerHTML = '<span class="muted">' + msg + '</span>';
+const setError = (msg) => { const e = $("#err"); e.textContent = msg; e.style.display = msg ? "block" : "none"; };
+const setOk = (msg) => { const e = $("#ok"); e.textContent = msg; e.style.display = msg ? "block" : "none"; };
+const log = (msg) => { $("#log").textContent += msg + "\n"; };
+const human = (n) => {
+  if (n < 1024) return n + " B";
+  const u = ["KB","MB","GB","TB"]; let x=n, i=-1;
+  do { x/=1024; i++; } while (x>=1024 && i<u.length-1);
+  return x.toFixed(2)+" "+u[i];
+};
+const parseTarget = () => {
+  const v = parseFloat($("#size").value || "0");
+  const unit = $("#unit").value;
+  const mult = unit === "GB" ? 1024*1024*1024 : 1024*1024;
+  return Math.max(1, Math.floor(v*mult));
+};
+const qualityParams = (mode) => {
+  // Returns [preset, crf]; lower CRF = higher quality (and larger files)
+  if (mode === "fast") return ["veryfast", "27"];
+  if (mode === "high") return ["slow", "20"];
+  return ["fast", "23"]; // balanced
+};
+
+function bindDropZone() {
+  const dz = $("#drop");
+  const fi = $("#file");
+  dz.addEventListener("click", () => fi.click());
+  dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("dragover"); });
+  dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
+  dz.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dz.classList.remove("dragover");
+    if (e.dataTransfer.files?.length) {
+      fi.files = e.dataTransfer.files;
+      $("#pickName").textContent = e.dataTransfer.files[0].name;
+    }
+  });
+  fi.addEventListener("change", () => {
+    if (fi.files?.length) $("#pickName").textContent = fi.files[0].name;
+  });
+}
+
+async function encodeHead(inName, tSec, outName, preset, crf) {
+  const args = ["-i", inName, "-t", tSec.toFixed(3),
+    "-c:v", "libx264", "-preset", preset, "-crf", crf,
+    "-c:a", "aac", "-b:a", "128k", outName];
+  await ffmpeg.run(...args);
+  const data = ffmpeg.FS("readFile", outName);
+  return { bytes: data.length, name: outName, data };
+}
+
+async function encodeTail(inName, startSec, outName, preset, crf) {
+  const args = ["-ss", startSec.toFixed(3), "-i", inName,
+    "-c:v", "libx264", "-preset", preset, "-crf", crf,
+    "-c:a", "aac", "-b:a", "128k", outName];
+  await ffmpeg.run(...args);
+  const data = ffmpeg.FS("readFile", outName);
+  return { bytes: data.length, name: outName, data };
+}
+
+async function process() {
+  setError(""); setOk(""); $("#links").innerHTML = ""; $("#log").textContent = "";
+  const f = $("#file").files?.[0];
+  if (!f) { setError("Please select a video file."); return; }
+  const target = parseTarget();
+  if (!target) { setError("Please enter a valid target size."); return; }
+
+  const q = $("#quality").value;
+  const [preset, crf] = qualityParams(q);
+
+  try {
+    $("#prog").style.display = "block";
+    $("#prog").value = 0;
+    status("Loading FFmpeg (WebAssembly)...");
+    if (!ffmpeg.isLoaded()) await ffmpeg.load();
+
+    const ext = (f.name.split(".").pop() || "mp4").toLowerCase();
+    const inName = "input." + ext;
+    ffmpeg.FS("writeFile", inName, await fetchFile(f));
+    status("Probing video...");
+    log(`Loaded ${f.name} (${human(f.size)})`);
+    log(`Quality mode: ${q} (preset=${preset}, crf=${crf})`);
+
+    // Step 1: exponential probe to find upper bound where size >= target
+    let lo = 0, hi = 60 * 60 * 6;
+    let t = 5;
+    let bytes = 0;
+    for (let i=0; i<7; i++) {
+      $("#prog").value = 0.05 + i*0.03;
+      status(`Probing… t=${t.toFixed(2)}s`);
+      const out = await encodeHead(inName, t, "probe.mp4", preset, crf);
+      bytes = out.bytes; ffmpeg.FS("unlink", "probe.mp4");
+      log(`Probe t=${t.toFixed(2)}s => ${human(bytes)}`);
+      if (bytes >= target) { hi = t; break; }
+      lo = t; t *= 2;
+      if (t > hi) { hi = t; break; }
+    }
+
+    if (bytes < target) {
+      status("Encoding full video as Part 1…");
+      const full = await encodeHead(inName, hi, "part1.mp4", preset, crf);
+      const url1 = URL.createObjectURL(new Blob([full.data.buffer], { type: "video/mp4" }));
+      $("#links").innerHTML = `<a download="part1.mp4" href="${url1}">Download Part 1 (${human(full.bytes)})</a>`;
+      $("#prog").value = 1;
+      setOk("Target is larger than the encoded full video. Only Part 1 generated.");
+      status("Done.");
+      return;
+    }
+
+    // Step 2: binary search time
+    let bestT = lo, bestDiff = Infinity, bestBytes = 0;
+    for (let i=0; i<12; i++) {
+      const mid = (lo + hi) / 2;
+      $("#prog").value = 0.20 + i*0.05;
+      status(`Searching best time… t=${mid.toFixed(2)}s`);
+      const out = await encodeHead(inName, mid, "head.mp4", preset, crf);
+      const diff = Math.abs(out.bytes - target);
+      log(`Search t=${mid.toFixed(2)}s => ${human(out.bytes)} (Δ ${human(diff)})`);
+      if (diff < bestDiff) { bestDiff = diff; bestT = mid; bestBytes = out.bytes; }
+      ffmpeg.FS("unlink", "head.mp4");
+      if (out.bytes < target) lo = mid; else hi = mid;
+      if (diff <= Math.max(target * 0.01, 512 * 1024)) break;
+    }
+
+    const T = bestT;
+    log(`Chosen timestamp: ${T.toFixed(2)}s (~${human(bestBytes)})`);
+
+    // Step 3: final outputs
+    status("Encoding Part 1…");
+    $("#prog").value = 0.85;
+    const head = await encodeHead(inName, T, "part1.mp4", preset, crf);
+
+    status("Encoding Part 2…");
+    $("#prog").value = 0.92;
+    const tail = await encodeTail(inName, T, "part2.mp4", preset, crf);
+
+    const url1 = URL.createObjectURL(new Blob([head.data.buffer], { type: "video/mp4" }));
+    const url2 = URL.createObjectURL(new Blob([tail.data.buffer], { type: "video/mp4" }));
+    $("#links").innerHTML =
+      `<a download="part1.mp4" href="${url1}">Download Part 1 (${human(head.bytes)})</a>` +
+      `<a download="part2.mp4" href="${url2}">Download Part 2 (${human(tail.bytes)})</a>`;
+    $("#prog").value = 1;
+    setOk("All done! Download your files below.");
+    status("Done.");
+  } catch (e) {
+    console.error(e);
+    setError("Something went wrong: " + (e?.message || e));
+    status("Error.");
+  } finally {
+    // Optional cleanup could go here
+  }
+}
+
+function main() {
+  bindDropZone();
+  $("#go").addEventListener("click", process);
+}
+main();
+</script>
+</body>
+</html>
