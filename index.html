@@ -166,25 +166,8 @@ function bindDropZone() {
   });
 }
 
-async function encodeHead(inName, tSec, outName, preset, crf) {
-  const args = ["-i", inName, "-t", tSec.toFixed(3),
-    "-c:v", "libx264", "-preset", preset, "-crf", crf,
-    "-c:a", "aac", "-b:a", "128k", outName];
-  await ffmpeg.run(...args);
-  const data = ffmpeg.FS("readFile", outName);
-  return { bytes: data.length, name: outName, data };
-}
-
-async function encodeTail(inName, startSec, outName, preset, crf) {
-  const args = ["-ss", startSec.toFixed(3), "-i", inName,
-    "-c:v", "libx264", "-preset", preset, "-crf", crf,
-    "-c:a", "aac", "-b:a", "128k", outName];
-  await ffmpeg.run(...args);
-  const data = ffmpeg.FS("readFile", outName);
-  return { bytes: data.length, name: outName, data };
-}
-
-async function process() {
+// Renamed to avoid any global name collisions with `process`
+async function runProcess() {
   setError(""); setOk(""); $("#links").innerHTML = ""; $("#log").textContent = "";
   const f = $("#file").files?.[0];
   if (!f) { setError("Please select a video file."); return; }
@@ -199,6 +182,7 @@ async function process() {
     $("#prog").value = 0;
     status("Loading FFmpeg (WebAssembly)...");
     if (!ffmpeg.isLoaded()) await ffmpeg.load();
+    log("FFmpeg loaded.");
 
     const ext = (f.name.split(".").pop() || "mp4").toLowerCase();
     const inName = "input." + ext;
@@ -275,9 +259,43 @@ async function process() {
   }
 }
 
+async function encodeHead(inName, tSec, outName, preset, crf) {
+  const args = ["-i", inName, "-t", tSec.toFixed(3),
+    "-c:v", "libx264", "-preset", preset, "-crf", crf,
+    "-c:a", "aac", "-b:a", "128k", outName];
+  await ffmpeg.run(...args);
+  const data = ffmpeg.FS("readFile", outName);
+  return { bytes: data.length, name: outName, data };
+}
+
+async function encodeTail(inName, startSec, outName, preset, crf) {
+  const args = ["-ss", startSec.toFixed(3), "-i", inName,
+    "-c:v", "libx264", "-preset", preset, "-crf", crf,
+    "-c:a", "aac", "-b:a", "128k", outName];
+  await ffmpeg.run(...args);
+  const data = ffmpeg.FS("readFile", outName);
+  return { bytes: data.length, name: outName, data };
+}
+
 function main() {
   bindDropZone();
-  $("#go").addEventListener("click", process);
+  const go = $("#go");
+  if (go) {
+    go.addEventListener("click", () => {
+      try { runProcess(); }
+      catch (e) {
+        console.error(e);
+        setError("Failed to start: " + (e?.message || e));
+      }
+    });
+  } else {
+    console.error("Process button not found");
+  }
+  // Surface unhandled promise rejections
+  window.addEventListener("unhandledrejection", (ev) => {
+    console.error("Unhandled promise rejection:", ev.reason);
+    setError("Unexpected error: " + (ev?.reason?.message || ev?.reason || "Unknown"));
+  });
 }
 main();
 </script>
