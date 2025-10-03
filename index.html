@@ -117,187 +117,39 @@
   </div>
 
 <script type="module">
-import { createFFmpeg, fetchFile } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js";
+  const $ = s => document.querySelector(s);
 
-const ffmpeg = createFFmpeg({
-  log: true,
-  corePath: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/ffmpeg-core.js"
-});
-
-const $ = s => document.querySelector(s);
-const status = (msg) => $("#status").innerHTML = '<span class="muted">' + msg + '</span>';
-const setError = (msg) => { const e = $("#err"); e.textContent = msg; e.style.display = msg ? "block" : "none"; };
-const setOk = (msg) => { const e = $("#ok"); e.textContent = msg; e.style.display = msg ? "block" : "none"; };
-const log = (msg) => { $("#log").textContent += msg + "\n"; };
-const human = (n) => {
-  if (n < 1024) return n + " B";
-  const u = ["KB","MB","GB","TB"]; let x=n, i=-1;
-  do { x/=1024; i++; } while (x>=1024 && i<u.length-1);
-  return x.toFixed(2)+" "+u[i];
-};
-const parseTarget = () => {
-  const v = parseFloat($("#size").value || "0");
-  const unit = $("#unit").value;
-  const mult = unit === "GB" ? 1024*1024*1024 : 1024*1024;
-  return Math.max(1, Math.floor(v*mult));
-};
-const qualityParams = (mode) => {
-  if (mode === "fast") return ["veryfast", "27"];
-  if (mode === "high") return ["slow", "20"];
-  return ["fast", "23"];
-};
-
-function bindDropZone() {
-  const dz = $("#drop");
-  const fi = $("#file");
-  dz.addEventListener("click", () => fi.click());
-  dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("dragover"); });
-  dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
-  dz.addEventListener("drop", (e) => {
-    e.preventDefault();
-    dz.classList.remove("dragover");
-    if (e.dataTransfer.files?.length) {
-      fi.files = e.dataTransfer.files;
-      $("#pickName").textContent = e.dataTransfer.files[0].name;
-    }
-  });
-  fi.addEventListener("change", () => {
-    if (fi.files?.length) $("#pickName").textContent = fi.files[0].name;
-  });
-}
-
-// Renamed to avoid any global name collisions with `process`
-async function runProcess() {
-  setError(""); setOk(""); $("#links").innerHTML = ""; $("#log").textContent = "";
-  const f = $("#file").files?.[0];
-  if (!f) { setError("Please select a video file."); return; }
-  const target = parseTarget();
-  if (!target) { setError("Please enter a valid target size."); return; }
-
-  const q = $("#quality").value;
-  const [preset, crf] = qualityParams(q);
-
+  // Try to import the ESM build from unpkg (good CORS + MIME)
+  let createFFmpeg, fetchFile;
   try {
-    $("#prog").style.display = "block";
-    $("#prog").value = 0;
-    status("Loading FFmpeg (WebAssembly)...");
-    if (!ffmpeg.isLoaded()) await ffmpeg.load();
-    log("FFmpeg loaded.");
-
-    const ext = (f.name.split(".").pop() || "mp4").toLowerCase();
-    const inName = "input." + ext;
-    ffmpeg.FS("writeFile", inName, await fetchFile(f));
-    status("Probing video...");
-    log(`Loaded ${f.name} (${human(f.size)})`);
-    log(`Quality mode: ${q} (preset=${preset}, crf=${crf})`);
-
-    // Step 1: exponential probe to find upper bound where size >= target
-    let lo = 0, hi = 60 * 60 * 6;
-    let t = 5;
-    let bytes = 0;
-    for (let i=0; i<7; i++) {
-      $("#prog").value = 0.05 + i*0.03;
-      status(`Probing… t=${t.toFixed(2)}s`);
-      const out = await encodeHead(inName, t, "probe.mp4", preset, crf);
-      bytes = out.bytes; ffmpeg.FS("unlink", "probe.mp4");
-      log(`Probe t=${t.toFixed(2)}s => ${human(bytes)}`);
-      if (bytes >= target) { hi = t; break; }
-      lo = t; t *= 2;
-      if (t > hi) { hi = t; break; }
-    }
-
-    if (bytes < target) {
-      status("Encoding full video as Part 1…");
-      const full = await encodeHead(inName, hi, "part1.mp4", preset, crf);
-      const url1 = URL.createObjectURL(new Blob([full.data.buffer], { type: "video/mp4" }));
-      $("#links").innerHTML = `<a download="part1.mp4" href="${url1}">Download Part 1 (${human(full.bytes)})</a>`;
-      $("#prog").value = 1;
-      setOk("Target is larger than the encoded full video. Only Part 1 generated.");
-      status("Done.");
-      return;
-    }
-
-    // Step 2: binary search time
-    let bestT = lo, bestDiff = Infinity, bestBytes = 0;
-    for (let i=0; i<12; i++) {
-      const mid = (lo + hi) / 2;
-      $("#prog").value = 0.20 + i*0.05;
-      status(`Searching best time… t=${mid.toFixed(2)}s`);
-      const out = await encodeHead(inName, mid, "head.mp4", preset, crf);
-      const diff = Math.abs(out.bytes - target);
-      log(`Search t=${mid.toFixed(2)}s => ${human(out.bytes)} (Δ ${human(diff)})`);
-      if (diff < bestDiff) { bestDiff = diff; bestT = mid; bestBytes = out.bytes; }
-      ffmpeg.FS("unlink", "head.mp4");
-      if (out.bytes < target) lo = mid; else hi = mid;
-      if (diff <= Math.max(target * 0.01, 512 * 1024)) break;
-    }
-
-    const T = bestT;
-    log(`Chosen timestamp: ${T.toFixed(2)}s (~${human(bestBytes)})`);
-
-    // Step 3: final outputs
-    status("Encoding Part 1…");
-    $("#prog").value = 0.85;
-    const head = await encodeHead(inName, T, "part1.mp4", preset, crf);
-
-    status("Encoding Part 2…");
-    $("#prog").value = 0.92;
-    const tail = await encodeTail(inName, T, "part2.mp4", preset, crf);
-
-    const url1 = URL.createObjectURL(new Blob([head.data.buffer], { type: "video/mp4" }));
-    const url2 = URL.createObjectURL(new Blob([tail.data.buffer], { type: "video/mp4" }));
-    $("#links").innerHTML =
-      `<a download="part1.mp4" href="${url1}">Download Part 1 (${human(head.bytes)})</a>` +
-      `<a download="part2.mp4" href="${url2}">Download Part 2 (${human(tail.bytes)})</a>`;
-    $("#prog").value = 1;
-    setOk("All done! Download your files below.");
-    status("Done.");
+    ({ createFFmpeg, fetchFile } = await import(
+      'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js?module'
+    ));
   } catch (e) {
-    console.error(e);
-    setError("Something went wrong: " + (e?.message || e));
-    status("Error.");
+    console.error('Failed to import @ffmpeg/ffmpeg from CDN:', e);
+    alert('Could not load FFmpeg library from CDN. See console for details. If this persists, use the self-host option I provided.');
+    throw e;
   }
-}
 
-async function encodeHead(inName, tSec, outName, preset, crf) {
-  const args = ["-i", inName, "-t", tSec.toFixed(3),
-    "-c:v", "libx264", "-preset", preset, "-crf", crf,
-    "-c:a", "aac", "-b:a", "128k", outName];
-  await ffmpeg.run(...args);
-  const data = ffmpeg.FS("readFile", outName);
-  return { bytes: data.length, name: outName, data };
-}
-
-async function encodeTail(inName, startSec, outName, preset, crf) {
-  const args = ["-ss", startSec.toFixed(3), "-i", inName,
-    "-c:v", "libx264", "-preset", preset, "-crf", crf,
-    "-c:a", "aac", "-b:a", "128k", outName];
-  await ffmpeg.run(...args);
-  const data = ffmpeg.FS("readFile", outName);
-  return { bytes: data.length, name: outName, data };
-}
-
-function main() {
-  bindDropZone();
-  const go = $("#go");
-  if (go) {
-    go.addEventListener("click", () => {
-      try { runProcess(); }
-      catch (e) {
-        console.error(e);
-        setError("Failed to start: " + (e?.message || e));
-      }
-    });
-  } else {
-    console.error("Process button not found");
-  }
-  // Surface unhandled promise rejections
-  window.addEventListener("unhandledrejection", (ev) => {
-    console.error("Unhandled promise rejection:", ev.reason);
-    setError("Unexpected error: " + (ev?.reason?.message || ev?.reason || "Unknown"));
+  const ffmpeg = createFFmpeg({
+    log: true,
+    // Use unpkg for the core files too
+    corePath: 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/ffmpeg-core.js'
   });
-}
-main();
+
+  // --- keep the rest of your JS exactly as before ---
+  // (Bind drop zone, qualityParams, encodeHead/encodeTail, runProcess, etc.)
+  // If you used my “patched” build that renamed process() -> runProcess(), keep that.
+
+  // Example (minimal bootstrap for the button):
+  function main() {
+    // If you have bindDropZone(), call it here:
+    // bindDropZone();
+    const go = $("#go");
+    if (go) go.addEventListener("click", () => runProcess(ffmpeg, fetchFile));
+  }
+  main();
 </script>
+
 </body>
 </html>
