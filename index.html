@@ -39,7 +39,6 @@
       width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--border);
       background: #111827; color: var(--text);
     }
-    .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .row-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
     .btn {
       appearance: none; border: 0; background: var(--accent); color: #fff; font-weight: 800;
@@ -59,11 +58,11 @@
     }
     .drop {
       border: 2px dashed var(--border); border-radius: 12px; padding: 14px; text-align: center;
-      background: #0b1220; color: var(--muted);
+      background: #0b1220; color: var(--muted); margin-top: 8px;
     }
     .drop.dragover { border-color: var(--accent); color: var(--text); }
     footer { opacity: .7; font-size: 12px; text-align: center; margin-top: 16px; }
-    @media (max-width: 640px) { .row, .row-3 { grid-template-columns: 1fr; } }
+    @media (max-width: 640px) { .row-3 { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -72,10 +71,12 @@
       <h1>Trim a Video to a Target File Size</h1>
       <p class="lead">All processing happens in your browser using <code>ffmpeg.wasm</code>. No uploads.</p>
 
-      <div id="drop" class="drop">Click to choose a video or drag & drop here</div>
-      <input id="file" type="file" accept="video/*" style="display:none" />
+      <label for="file">Choose a video file</label>
+      <input id="file" type="file" accept="video/*" />
+      <div id="drop" class="drop">…or drag & drop here</div>
+      <div class="muted" id="pickName" style="margin-top:6px;"></div>
 
-      <div class="row-3">
+      <div class="row-3" style="margin-top: 12px;">
         <div>
           <label for="size">Target size</label>
           <input id="size" name="size" type="number" step="any" min="0.1" placeholder="8" />
@@ -101,10 +102,7 @@
       </div>
 
       <div style="margin-top: 14px;">
-        <button id="go" class="btn">
-          <span>Process</span>
-        </button>
-        <span id="pickName" class="muted" style="margin-left:12px;"></span>
+        <button id="go" class="btn"><span>Process</span></button>
       </div>
 
       <div id="status" style="margin-top:14px;"></div>
@@ -144,10 +142,9 @@ const parseTarget = () => {
   return Math.max(1, Math.floor(v*mult));
 };
 const qualityParams = (mode) => {
-  // Returns [preset, crf]; lower CRF = higher quality (and larger files)
   if (mode === "fast") return ["veryfast", "27"];
   if (mode === "high") return ["slow", "20"];
-  return ["fast", "23"]; // balanced
+  return ["fast", "23"];
 };
 
 function bindDropZone() {
@@ -275,8 +272,6 @@ async function process() {
     console.error(e);
     setError("Something went wrong: " + (e?.message || e));
     status("Error.");
-  } finally {
-    // Optional cleanup could go here
   }
 }
 
